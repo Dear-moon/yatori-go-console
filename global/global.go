@@ -10,6 +10,7 @@ import (
 var GlobalDB *gorm.DB //数据库挂载
 
 var AccountTypeStr = map[string]string{
+	"MOOC":      "中国大学MOOC",
 	"XUEXITONG": "学习通",
 	"YINGHUA":   "英华学堂",
 	"CANGHUI":   "仓辉实训",

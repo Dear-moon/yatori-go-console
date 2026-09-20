@@ -1,7 +1,9 @@
 package logic
 
 import (
+	"context"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 	"yatori-go-console/logic/haiqikeji"
 	"yatori-go-console/logic/icve"
 	"yatori-go-console/logic/ketangx"
+	mooclogic "yatori-go-console/logic/mooc"
 	qsxt "yatori-go-console/logic/qingshuxuetang"
 	"yatori-go-console/logic/welearn"
 	"yatori-go-console/logic/xuexitong"
@@ -78,15 +81,24 @@ func Lunch() {
 		setConfig.Setting.ApiQueSetting.Url = "http://localhost:8083"
 
 		accountType := config.GetUserInput("请输入平台类型 (如 YINGHUA)(全大写): ")
-		url := config.GetUserInput("请输入平台的URL链接 (可留空): ")
-		account := config.GetUserInput("请输入账号: ")
-		password := config.GetUserInput("请输入密码: ")
+		var url, account, password, videoModel, autoExam, examAutoSubmit, includeCourses, excludeCourses string
+		if accountType == "MOOC" {
+			account = config.GetUserInput("请输入手机号: ")
+			videoModel = config.GetUserInput("请输入视频模式 (0-仅查看, 1-普通计时上报): ")
+			includeCourses = config.GetUserInput("请输入需要包含的课程名称，多个用英文逗号分隔(可留空): ")
+			excludeCourses = config.GetUserInput("请输入需要排除的课程名称，多个用英文逗号分隔(可留空): ")
+		} else {
+			url = config.GetUserInput("请输入平台的URL链接 (可留空): ")
+			account = config.GetUserInput("请输入账号: ")
+			password = config.GetUserInput("请输入密码: ")
 
-		videoModel := config.GetUserInput("请输入刷视频模式 (0-不刷, 1-普通模式, 2-暴力模式, 3-去红模式): ")
-		autoExam := config.GetUserInput("是否自动考试? (0-不考试, 1-AI考试, 2-外部题库对接考试): ")
-		examAutoSubmit := config.GetUserInput("考完试是否自动提交试卷? (0-否, 1-是): ")
-		includeCourses := config.GetUserInput("请输入需要包含的课程名称，多个用(英文逗号)分隔(可留空): ")
-		excludeCourses := config.GetUserInput("请输入需要排除的课程名称，多个用(英文逗号)分隔(可留空): ")
+			videoModel = config.GetUserInput("请输入刷视频模式 (0-不刷, 1-普通模式, 2-暴力模式, 3-去红模式): ")
+			autoExam = config.GetUserInput("是否自动考试? (0-不考试, 1-AI考试, 2-外部题库对接考试): ")
+			examAutoSubmit = config.GetUserInput("考完试是否自动提交试卷? (0-否, 1-是): ")
+			includeCourses = config.GetUserInput("请输入需要包含的课程名称，多个用(英文逗号)分隔(可留空): ")
+			excludeCourses = config.GetUserInput("请输入需要排除的课程名称，多个用(英文逗号)分隔(可留空): ")
+
+		}
 
 		cleanStringSlice := func(s string) []string {
 			if s == "" {
@@ -149,6 +161,15 @@ func Lunch() {
 var platformLock sync.WaitGroup //平台锁
 // brushBlock 刷课执行块
 func brushBlock(configData *config.JSONDataForConfig) {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	if err := mooclogic.Run(ctx, configData.Users, os.Stdin, os.Stdout, utils2.RandProxyStr); err != nil {
+		lg.Print(lg.INFO, "[MOOC] ", err.Error())
+	}
+	if ctx.Err() != nil {
+		return
+	}
+
 	//统一登录模块------------------------------------------------------------------
 	yingHuaAccount := yinghua.FilterAccount(configData)
 	yingHuaOperation := yinghua.UserLoginOperation(yingHuaAccount)
