@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"text/tabwriter"
 
@@ -16,8 +17,7 @@ import (
 
 type session interface {
 	moocstudy.VideoClient
-	SendSMS(context.Context) error
-	LoginSMS(context.Context, string) (*mooc.MOOCUser, error)
+	LoginCookies(context.Context, []*http.Cookie) (*mooc.MOOCUser, error)
 	Courses(context.Context) ([]mooc.MOOCCourse, error)
 	Chapters(context.Context, string) ([]mooc.MOOCChapter, error)
 	Close()
@@ -26,7 +26,7 @@ type sessionFactory func(string, mooc.ClientOptions) (session, error)
 
 func Run(ctx context.Context, users []config.User, input io.Reader, output io.Writer, proxy func() string) error {
 	return run(ctx, users, input, output, proxy, func(account string, options mooc.ClientOptions) (session, error) {
-		return mooc.NewMOOCClient(account, options)
+		return mooc.NewCookieClient(options)
 	})
 }
 
@@ -70,20 +70,22 @@ func runAccount(ctx context.Context, user config.User, client session, reader *b
 	if label == "" {
 		label = maskAccount(user.Account)
 	}
-	fmt.Fprintf(output, "[MOOC] %s：正在请求短信验证码…\n", safeText(label))
-	if err := client.SendSMS(ctx); err != nil {
-		return explainError(err)
-	}
-	fmt.Fprint(output, "请输入短信验证码（输入 q 取消）：")
-	code, err := readCode(ctx, reader)
+	fmt.Fprintf(output, "[MOOC] %s：请在启用远程调试的专用浏览器中登录对应账号。\n", safeText(label))
+	fmt.Fprintln(output, "默认连接本机 9222 端口；可用 YATORI_MOOC_CDP_URL 指定本机调试地址。")
+	fmt.Fprint(output, "确认浏览器当前账号无误后按回车继续（输入 q 取消）：")
+	confirmation, err := readCode(ctx, reader)
 	if err != nil {
 		return err
 	}
-	if code == "q" {
+	if confirmation == "q" {
 		return context.Canceled
 	}
-	current, err := client.LoginSMS(ctx, code)
-	code = ""
+	cookies, err := browserCookies(ctx)
+	if err != nil {
+		return err
+	}
+	current, err := client.LoginCookies(ctx, cookies)
+	cookies = nil
 	if err != nil {
 		return explainError(err)
 	}
@@ -162,7 +164,7 @@ func readCode(ctx context.Context, reader *bufio.Reader) (string, error) {
 		return "", ctx.Err()
 	case r := <-done:
 		if r.err != nil {
-			return "", errors.New("无法读取短信验证码")
+			return "", errors.New("无法读取登录确认")
 		}
 		return r.line, nil
 	}
@@ -183,7 +185,7 @@ func safeText(value string) string {
 }
 func explainError(err error) error {
 	if errors.Is(err, mooc.ErrNeedsUserAction) {
-		return fmt.Errorf("平台要求额外人工验证，请在浏览器完成；本次不会继续发送短信：%w", err)
+		return fmt.Errorf("平台要求额外人工验证，请在浏览器完成；完成后请重新运行以导入 Cookie：%w", err)
 	}
 	return err
 }
