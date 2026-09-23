@@ -18,6 +18,7 @@ import (
 	"yatori-go-console/logic/welearn"
 	"yatori-go-console/logic/xuexitong"
 	"yatori-go-console/logic/yinghua"
+	zhslogic "yatori-go-console/logic/zhihuishu"
 	utils2 "yatori-go-console/utils"
 	"yatori-go-console/web"
 
@@ -82,7 +83,11 @@ func Lunch() {
 
 		accountType := config.GetUserInput("请输入平台类型 (如 YINGHUA)(全大写): ")
 		var url, account, password, videoModel, autoExam, examAutoSubmit, includeCourses, excludeCourses string
-		if accountType == "MOOC" {
+		if accountType == "ZHIHUISHU" {
+			videoModel = config.GetUserInput("请输入视频模式 (0-查看目录, 1-普通计时模式): ")
+			includeCourses = config.GetUserInput("请输入需要包含的课程名称，多个用英文逗号分隔(可留空): ")
+			excludeCourses = config.GetUserInput("请输入需要排除的课程名称，多个用英文逗号分隔(可留空): ")
+		} else if accountType == "MOOC" {
 			account = config.GetUserInput("请输入手机号: ")
 			videoModel = config.GetUserInput("请输入视频模式 (0-仅查看, 1-普通计时上报): ")
 			includeCourses = config.GetUserInput("请输入需要包含的课程名称，多个用英文逗号分隔(可留空): ")
@@ -165,6 +170,12 @@ func brushBlock(configData *config.JSONDataForConfig) {
 	defer cancel()
 	if err := mooclogic.Run(ctx, configData.Users, os.Stdin, os.Stdout, utils2.RandProxyStr); err != nil {
 		lg.Print(lg.INFO, "[MOOC] ", err.Error())
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if err := zhslogic.Run(ctx, configData.Users, os.Stdin, os.Stdout, utils2.RandProxyStr); err != nil {
+		lg.Print(lg.INFO, "[智慧树] ", err.Error())
 	}
 	if ctx.Err() != nil {
 		return
