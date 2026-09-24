@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	moocstudy "github.com/yatori-dev/yatori-go-core/aggregation/mooc"
 	"github.com/yatori-dev/yatori-go-core/api/mooc"
@@ -17,6 +18,7 @@ import (
 
 type session interface {
 	moocstudy.VideoClient
+	CompleteDocument(context.Context, mooc.MOOCCourse, mooc.MOOCLesson, mooc.MOOCUnit) error
 	LoginCookies(context.Context, []*http.Cookie) (*mooc.MOOCUser, error)
 	Courses(context.Context) ([]mooc.MOOCCourse, error)
 	Chapters(context.Context, string) ([]mooc.MOOCChapter, error)
@@ -93,6 +95,7 @@ func runAccount(ctx context.Context, user config.User, client session, reader *b
 		return mooc.ErrAuthenticationUnverified
 	}
 	fmt.Fprintf(output, "[MOOC] 已验证身份：%s\n", safeText(current.Nickname))
+	fmt.Fprintln(output, "[MOOC] 登录态已导入，可关闭专用浏览器；后续任务由 CLI 自动执行。")
 	courses, err := client.Courses(ctx)
 	if err != nil {
 		return explainError(err)
@@ -127,6 +130,22 @@ func runAccount(ctx context.Context, user config.User, client session, reader *b
 				count += len(lesson.Units)
 				if settings.VideoModel == 1 {
 					for _, unit := range lesson.Units {
+						if unit.ContentType == 3 {
+							if unit.ViewStatus == nil || *unit.ViewStatus != 5 {
+								timer := time.NewTimer(2 * time.Second)
+								select {
+								case <-ctx.Done():
+									timer.Stop()
+									return ctx.Err()
+								case <-timer.C:
+								}
+							}
+							if err := client.CompleteDocument(ctx, course, lesson, unit); err != nil {
+								return explainError(err)
+							}
+							fmt.Fprintf(output, "[MOOC] %s：已确认服务端文档已学习标记。\n", safeText(unit.Name))
+							continue
+						}
 						if unit.ContentType != 1 {
 							fmt.Fprintf(output, "[MOOC] %s：跳过未支持的学习类型 %d\n", safeText(unit.Name), unit.ContentType)
 							continue
@@ -142,7 +161,7 @@ func runAccount(ctx context.Context, user config.User, client session, reader *b
 				}
 			}
 		}
-		fmt.Fprintf(output, "[MOOC] 已处理 %d 个学习单元的目录；视频按 videoModel 执行，非视频任务尚未自动处理。\n", count)
+		fmt.Fprintf(output, "[MOOC] 已处理 %d 个学习单元的目录；视频与文档按 videoModel 执行，其他类型任务尚未自动处理。\n", count)
 	}
 	return nil
 }
