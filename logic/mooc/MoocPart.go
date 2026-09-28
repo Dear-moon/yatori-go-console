@@ -20,6 +20,7 @@ type session interface {
 	moocstudy.VideoClient
 	CompleteDocument(context.Context, mooc.MOOCCourse, mooc.MOOCLesson, mooc.MOOCUnit) error
 	LoginCookies(context.Context, []*http.Cookie) (*mooc.MOOCUser, error)
+	LoginWithPassword(context.Context, string) (*mooc.MOOCUser, error)
 	Courses(context.Context) ([]mooc.MOOCCourse, error)
 	Chapters(context.Context, string) ([]mooc.MOOCChapter, error)
 	Close()
@@ -28,6 +29,10 @@ type sessionFactory func(string, mooc.ClientOptions) (session, error)
 
 func Run(ctx context.Context, users []config.User, input io.Reader, output io.Writer, proxy func() string) error {
 	return run(ctx, users, input, output, proxy, func(account string, options mooc.ClientOptions) (session, error) {
+		// The account is only required for the password path.
+		if strings.TrimSpace(account) != "" {
+			return mooc.NewMOOCClient(account, options)
+		}
 		return mooc.NewCookieClient(options)
 	})
 }
@@ -72,30 +77,40 @@ func runAccount(ctx context.Context, user config.User, client session, reader *b
 	if label == "" {
 		label = maskAccount(user.Account)
 	}
-	fmt.Fprintf(output, "[MOOC] %s：请在启用远程调试的专用浏览器中登录对应账号。\n", safeText(label))
-	fmt.Fprintln(output, "默认连接本机 9222 端口；可用 YATORI_MOOC_CDP_URL 指定本机调试地址。")
-	fmt.Fprint(output, "确认浏览器当前账号无误后按回车继续（输入 q 取消）：")
-	confirmation, err := readCode(ctx, reader)
-	if err != nil {
-		return err
-	}
-	if confirmation == "q" {
-		return context.Canceled
-	}
-	cookies, err := browserCookies(ctx)
-	if err != nil {
-		return err
-	}
-	current, err := client.LoginCookies(ctx, cookies)
-	cookies = nil
-	if err != nil {
-		return explainError(err)
+	var current *mooc.MOOCUser
+	var err error
+	if strings.TrimSpace(user.Account) != "" && strings.TrimSpace(user.Password) != "" {
+		fmt.Fprintf(output, "[MOOC] %s：使用账号密码直接登录，不需要浏览器。\n", safeText(label))
+		current, err = client.LoginWithPassword(ctx, user.Password)
+		if err != nil {
+			return explainError(err)
+		}
+	} else {
+		fmt.Fprintf(output, "[MOOC] %s：请在启用远程调试的专用浏览器中登录对应账号。\n", safeText(label))
+		fmt.Fprintln(output, "默认连接本机 9222 端口；可用 YATORI_MOOC_CDP_URL 指定本机调试地址。")
+		fmt.Fprint(output, "确认浏览器当前账号无误后按回车继续（输入 q 取消）：")
+		confirmation, err := readCode(ctx, reader)
+		if err != nil {
+			return err
+		}
+		if confirmation == "q" {
+			return context.Canceled
+		}
+		cookies, err := browserCookies(ctx)
+		if err != nil {
+			return err
+		}
+		current, err = client.LoginCookies(ctx, cookies)
+		cookies = nil
+		if err != nil {
+			return explainError(err)
+		}
+		fmt.Fprintln(output, "[MOOC] 登录态已导入，可关闭专用浏览器；后续任务由 CLI 自动执行。")
 	}
 	if current == nil || current.ID == "" {
 		return mooc.ErrAuthenticationUnverified
 	}
 	fmt.Fprintf(output, "[MOOC] 已验证身份：%s\n", safeText(current.Nickname))
-	fmt.Fprintln(output, "[MOOC] 登录态已导入，可关闭专用浏览器；后续任务由 CLI 自动执行。")
 	courses, err := client.Courses(ctx)
 	if err != nil {
 		return explainError(err)
@@ -205,6 +220,9 @@ func safeText(value string) string {
 func explainError(err error) error {
 	if errors.Is(err, mooc.ErrNeedsUserAction) {
 		return fmt.Errorf("平台要求额外人工验证，请在浏览器完成；完成后请重新运行以导入 Cookie：%w", err)
+	}
+	if errors.Is(err, mooc.ErrAuthenticationUnverified) {
+		return fmt.Errorf("账号密码未通过平台校验（凭据错误、账号不可用或需要人工验证）：%w", err)
 	}
 	return err
 }

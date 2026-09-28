@@ -3,7 +3,6 @@ package zhihuishu
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,25 +13,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yatori-dev/yatori-go-core/api/zhihuishu"
 	"golang.org/x/net/websocket"
 )
 
-func browserSession(ctx context.Context) (*zhihuishu.BrowserSession, error) {
+// browserCookies reads the signed-in cookies; the client derives the session keys itself.
+func browserCookies(ctx context.Context) ([]*http.Cookie, error) {
 	endpoint := os.Getenv("YATORI_ZHIHUISHU_CDP_URL")
 	if endpoint == "" {
 		endpoint = "http://127.0.0.1:9223"
 	}
-	return readBrowserSession(ctx, endpoint)
+	return readBrowserCookies(ctx, endpoint)
 }
 
-func readBrowserSession(ctx context.Context, endpoint string) (*zhihuishu.BrowserSession, error) {
+func readBrowserCookies(ctx context.Context, endpoint string) ([]*http.Cookie, error) {
 	fail := errors.New("ZHIHUISHU browser connection failed; open a dedicated browser with remote debugging enabled")
 	base, e := url.Parse(endpoint)
 	if e != nil || base.Scheme != "http" || !loopbackURL(base) || base.RawQuery != "" || base.Fragment != "" || (base.Path != "" && base.Path != "/") {
 		return nil, fail
 	}
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	target := *base
 	target.Path = "/json/list"
@@ -70,8 +69,17 @@ func readBrowserSession(ctx context.Context, endpoint string) (*zhihuishu.Browse
 			break
 		}
 	}
+	// Cookies live in the browser profile, so any open page target can read them.
 	if socket == "" {
-		return nil, errors.New("ZHIHUISHU page not found in debug browser; open https://ai-smart-course-student-pro.zhihuishu.com/ and sign in")
+		for _, tab := range tabs {
+			if tab.Type == "page" && strings.HasPrefix(tab.Socket, "ws") {
+				socket = tab.Socket
+				break
+			}
+		}
+	}
+	if socket == "" {
+		return nil, errors.New("ZHIHUISHU browser has no open page; open https://onlineweb.zhihuishu.com/ and sign in")
 	}
 	wsURL, e := url.Parse(socket)
 	if e != nil || wsURL.Scheme != "ws" || !loopbackURL(wsURL) || wsURL.Host != base.Host {
@@ -108,63 +116,6 @@ func readBrowserSession(ctx context.Context, endpoint string) (*zhihuishu.Browse
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = ws.SetDeadline(deadline)
 	}
-	call := func(id int, method string, params map[string]any, output any) error {
-		if websocket.JSON.Send(ws, map[string]any{"id": id, "method": method, "params": params}) != nil {
-			return fail
-		}
-		for {
-			var response struct {
-				ID     int             `json:"id"`
-				Error  json.RawMessage `json:"error"`
-				Result json.RawMessage `json:"result"`
-			}
-			if websocket.JSON.Receive(ws, &response) != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				return fail
-			}
-			if response.ID != id {
-				continue
-			}
-			if len(response.Error) != 0 || json.Unmarshal(response.Result, output) != nil {
-				return fail
-			}
-			return nil
-		}
-	}
-	// Restored background tabs may suspend asynchronous application requests.
-	if err := call(4, "Page.setWebLifecycleState", map[string]any{"state": "active"}, &struct{}{}); err != nil {
-		return nil, err
-	}
-	if err := call(3, "Page.bringToFront", map[string]any{}, &struct{}{}); err != nil {
-		return nil, err
-	}
-	var evaluated struct {
-		Exception json.RawMessage `json:"exceptionDetails"`
-		Result    struct {
-			Value *struct {
-				Keys  map[string]string `json:"keys"`
-				IV    string            `json:"iv"`
-				MapID string            `json:"mapUid"`
-			} `json:"value"`
-		} `json:"result"`
-	}
-	// Resolve rotating protocol material through the signed-in application.
-	expression := `(async()=>{const keys={};for(const id of [6,13]){const wrapped=await window.labc(id);const pair=rsaUtil.genKeyPair();keys[id]=rsaUtil.decrypt(wrapped,pair.publicKey).cKey}return {keys,iv:aesUtil.iv.toString(CryptoJS.enc.Hex),mapUid:sessionStorage.getItem('mapUid')||''}})()`
-	fail = errors.New("智慧树动态会话读取失败，请刷新课程章节页面后重试")
-	if err := call(1, "Runtime.evaluate", map[string]any{"expression": expression, "awaitPromise": true, "returnByValue": true}, &evaluated); err != nil {
-		return nil, err
-	}
-	if len(evaluated.Exception) != 0 || evaluated.Result.Value == nil {
-		return nil, errors.New("智慧树页面尚未就绪，请先打开 AI 课程的章节页面")
-	}
-	material := evaluated.Result.Value
-	fail = errors.New("智慧树动态协议材料格式不匹配")
-	iv, err := hex.DecodeString(material.IV)
-	if err != nil || len(iv) != 16 || len(material.Keys["6"]) != 16 || len(material.Keys["13"]) != 16 {
-		return nil, fail
-	}
 	var result struct {
 		Cookies []struct {
 			Name, Value, Domain, Path string
@@ -172,9 +123,35 @@ func readBrowserSession(ctx context.Context, endpoint string) (*zhihuishu.Browse
 			Expires                   float64
 		} `json:"cookies"`
 	}
-	fail = errors.New("智慧树浏览器 Cookie 读取失败")
-	if err := call(2, "Network.getCookies", map[string]any{"urls": []string{"https://onlineservice-api.zhihuishu.com/", "https://kg-ai-run.zhihuishu.com/", "https://newbase.zhihuishu.com/"}}, &result); err != nil {
-		return nil, err
+	request := map[string]any{"id": 1, "method": "Network.getCookies", "params": map[string]any{"urls": []string{
+		"https://onlineservice-api.zhihuishu.com/",
+		"https://kg-ai-run.zhihuishu.com/",
+		"https://newbase.zhihuishu.com/",
+		"https://appcomm-user.zhihuishu.com/",
+		"https://ai-smart-course-student-pro.zhihuishu.com/",
+	}}}
+	if websocket.JSON.Send(ws, request) != nil {
+		return nil, fail
+	}
+	for {
+		var response struct {
+			ID     int             `json:"id"`
+			Error  json.RawMessage `json:"error"`
+			Result json.RawMessage `json:"result"`
+		}
+		if websocket.JSON.Receive(ws, &response) != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fail
+		}
+		if response.ID != 1 {
+			continue
+		}
+		if len(response.Error) != 0 || json.Unmarshal(response.Result, &result) != nil {
+			return nil, fail
+		}
+		break
 	}
 	cookies := make([]*http.Cookie, 0, len(result.Cookies))
 	for _, v := range result.Cookies {
@@ -191,7 +168,7 @@ func readBrowserSession(ctx context.Context, endpoint string) (*zhihuishu.Browse
 	if len(cookies) == 0 {
 		return nil, errors.New("ZHIHUISHU browser has no session cookies; sign in first")
 	}
-	return &zhihuishu.BrowserSession{Cookies: cookies, AIKey: []byte(material.Keys["6"]), CourseKey: []byte(material.Keys["13"]), IV: iv, MapID: material.MapID}, nil
+	return cookies, nil
 }
 
 func loopbackURL(u *url.URL) bool {

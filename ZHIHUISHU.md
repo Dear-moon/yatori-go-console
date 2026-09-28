@@ -5,7 +5,7 @@
 ## 登录与配置
 
 1. 使用开启远程调试的专用 Edge/Chrome 浏览器，调试端口为 `9223`。
-2. 在该浏览器访问 `https://onlineweb.zhihuishu.com/` 并登录，然后打开 AI 课程的章节页面。
+2. 在该浏览器访问 `https://onlineweb.zhihuishu.com/` 并登录。程序只读取 Cookie，会话密钥由 CLI 自行推导，不需要停留或打开课程页面。
 3. 将下面的账户项加入现有配置的 `users` 列表，或在控制台配置向导中选择 `ZHIHUISHU`。
 4. 运行控制台，确认浏览器当前账户正确后按回车。
 
@@ -23,6 +23,7 @@
 - `videoModel: 1`：按模块、章节和知识点逐个处理支持的视频、电子书和引用 PPT；视频每次等待实际经过的时间后上报，最大间隔 10 秒。
 - `includeCourses` / `excludeCourses`：沿用现有课程名称筛选规则。
 - 默认连接 `http://127.0.0.1:9223`，可使用 `YATORI_ZHIHUISHU_CDP_URL` 指定其他本机 IP 调试地址。
+- 会话密钥通过 `appcomm-user.zhihuishu.com/app-commserv-user/c/has` 获取：用站点固定公钥封装模块编号，再用同一公钥解开响应中的 `cKey`。该过程不需要浏览器页面中的脚本，页面可以关闭或停在任意地址。
 - 登录密码无需写入配置。Cookie 和动态协议材料仅在内存中传递，不输出或保存到配置。
 
 ## 行为与限制

@@ -48,7 +48,7 @@ func runAccount(ctx context.Context, user config.User, client *zhihuishu.Client,
 	if user.CoursesCustom.AutoExam != 0 {
 		fmt.Fprintln(output, "[智慧树] 自动答题尚未接入。")
 	}
-	fmt.Fprintln(output, "[智慧树] 请在专用浏览器登录 onlineweb.zhihuishu.com，并打开 AI 课程章节页面。")
+	fmt.Fprintln(output, "[智慧树] 请在专用浏览器登录 onlineweb.zhihuishu.com；登录态有效即可，不必停留在课程页。")
 	fmt.Fprintln(output, "默认连接本机 9223 端口；可用 YATORI_ZHIHUISHU_CDP_URL 指定本机调试地址。")
 	fmt.Fprint(output, "确认浏览器当前账号无误后按回车继续（输入 q 取消）：")
 	type answer struct {
@@ -71,12 +71,12 @@ func runAccount(ctx context.Context, user config.User, client *zhihuishu.Client,
 			return context.Canceled
 		}
 	}
-	material, err := browserSession(ctx)
+	cookies, err := browserCookies(ctx)
 	if err != nil {
 		return err
 	}
-	current, err := client.LoginBrowserSession(ctx, *material)
-	material = nil
+	current, err := client.LoginCookies(ctx, cookies)
+	cookies = nil
 	if err != nil {
 		if errors.Is(err, zhihuishu.ErrAuthenticationFailed) || errors.Is(err, zhihuishu.ErrSessionExpired) {
 			return fmt.Errorf("请先在浏览器访问 onlineweb.zhihuishu.com 恢复登录，再重新运行：%w", err)
