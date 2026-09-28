@@ -6,6 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"yatori-go-console/config"
 
@@ -48,38 +52,36 @@ func runAccount(ctx context.Context, user config.User, client *zhihuishu.Client,
 	if user.CoursesCustom.AutoExam != 0 {
 		fmt.Fprintln(output, "[智慧树] 自动答题尚未接入。")
 	}
-	fmt.Fprintln(output, "[智慧树] 请在专用浏览器登录 onlineweb.zhihuishu.com；登录态有效即可，不必停留在课程页。")
-	fmt.Fprintln(output, "默认连接本机 9223 端口；可用 YATORI_ZHIHUISHU_CDP_URL 指定本机调试地址。")
-	fmt.Fprint(output, "确认浏览器当前账号无误后按回车继续（输入 q 取消）：")
-	type answer struct {
-		value string
-		err   error
-	}
-	done := make(chan answer, 1)
-	go func() {
-		line, err := reader.ReadString('\n')
-		done <- answer{strings.TrimSpace(line), err}
-	}()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case result := <-done:
-		if result.err != nil {
-			return errors.New("无法读取登录确认")
+	useQR := strings.EqualFold(strings.TrimSpace(os.Getenv("YATORI_ZHIHUISHU_LOGIN")), "qr")
+	if !useQR {
+		fmt.Fprintln(output, "[智慧树] 请在专用浏览器登录 onlineweb.zhihuishu.com；登录态有效即可，不必停留在课程页。")
+		fmt.Fprintln(output, "默认连接本机 9223 端口；可用 YATORI_ZHIHUISHU_CDP_URL 指定本机调试地址。")
+		fmt.Fprint(output, "确认浏览器当前账号无误后按回车继续（输入 q 取消）：")
+		type answer struct {
+			value string
+			err   error
 		}
-		if result.value == "q" {
-			return context.Canceled
+		done := make(chan answer, 1)
+		go func() {
+			line, err := reader.ReadString('\n')
+			done <- answer{strings.TrimSpace(line), err}
+		}()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case result := <-done:
+			if result.err != nil {
+				return errors.New("无法读取登录确认")
+			}
+			if result.value == "q" {
+				return context.Canceled
+			}
 		}
 	}
-	cookies, err := browserCookies(ctx)
-	if err != nil {
-		return err
-	}
-	current, err := client.LoginCookies(ctx, cookies)
-	cookies = nil
+	current, err := loginZhihuishu(ctx, client, output, useQR)
 	if err != nil {
 		if errors.Is(err, zhihuishu.ErrAuthenticationFailed) || errors.Is(err, zhihuishu.ErrSessionExpired) {
-			return fmt.Errorf("请先在浏览器访问 onlineweb.zhihuishu.com 恢复登录，再重新运行：%w", err)
+			return fmt.Errorf("智慧树登录态无效，请在浏览器恢复登录，或用 YATORI_ZHIHUISHU_LOGIN=qr 扫码登录：%w", err)
 		}
 		return err
 	}
@@ -87,7 +89,6 @@ func runAccount(ctx context.Context, user config.User, client *zhihuishu.Client,
 		return zhihuishu.ErrAuthenticationFailed
 	}
 
-	fmt.Fprintln(output, "[智慧树] 登录态已导入并验证，可关闭专用浏览器；后续任务由 CLI 自动执行。")
 	courses, err := client.AICourses(ctx)
 	if err != nil {
 		return err
@@ -199,6 +200,51 @@ func resourcesComplete(before, after []zhihuishu.Resource) bool {
 		}
 	}
 	return true
+}
+
+// loginZhihuishu prefers browser cookies and falls back to a scanned code.
+func loginZhihuishu(ctx context.Context, client *zhihuishu.Client, output io.Writer, useQR bool) (*zhihuishu.User, error) {
+	if !useQR {
+		cookies, err := browserCookies(ctx)
+		if err == nil {
+			user, err := client.LoginCookies(ctx, cookies)
+			cookies = nil
+			if err == nil {
+				fmt.Fprintln(output, "[智慧树] 登录态已导入并验证，可关闭专用浏览器；后续任务由 CLI 自动执行。")
+				return user, nil
+			}
+			fmt.Fprintln(output, "[智慧树] 浏览器登录态不可用，改用扫码登录：", safeText(err.Error()))
+		} else {
+			fmt.Fprintln(output, "[智慧树] 未找到可用的调试浏览器，改用扫码登录。")
+		}
+	}
+	fmt.Fprintln(output, "[智慧树] 正在获取登录二维码…")
+	user, err := client.LoginQRCode(ctx, func(code zhihuishu.QRCode) error { return showQRCode(output, code) }, 0)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintln(output, "[智慧树] 扫码登录成功，后续任务由 CLI 自动执行。")
+	return user, nil
+}
+
+// showQRCode stores the image and opens it with the default viewer.
+func showQRCode(output io.Writer, code zhihuishu.QRCode) error {
+	path := filepath.Join("assets", "qr", "zhihuishu-login.png")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, code.ImagePNG, 0o600); err != nil {
+		return err
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		absolute = path
+	}
+	fmt.Fprintf(output, "[智慧树] 请用智慧树/知到 App 扫码登录，二维码文件：%s（有效期约 3 分钟）\n", absolute)
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("cmd", "/c", "start", "", absolute).Start()
+	}
+	return nil
 }
 
 func safeText(value string) string {
