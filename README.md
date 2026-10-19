@@ -10,6 +10,17 @@
 
 <div align="center"><img width="125px" src="https://img.shields.io/badge/GO1.24.0-building-r.svg?logo=go"></img> <img width="80px" src="https://img.shields.io/github/stars/yatori-dev/yatori-go-console.svg"></img> <img width="90px" src="https://img.shields.io/github/downloads/yatori-dev/yatori-go-console/total.svg"></img> <img width="70px" src="https://img.shields.io/github/license/Yatori-Dev/yatori-go-console.svg"></img></div>
 
+
+## 控制台启动与平台选择
+
+启动时会并发登录并查询 `config.yaml` 中已登记平台的课程。查询阶段只读取课程，不提交学习进度；需要扫码或浏览器确认的登录由控制台依次提示。
+
+课程查询完成后显示按平台分组的菜单。输入编号可启动一个或多个平台，例如 `1,3`；输入 `all` 启动所有可用平台，`q` 退出。空输入或无效编号不会启动任务，查询失败及没有课程的账号会跳过。
+
+不同平台同时执行，同平台多个账号依次执行。任务复用启动查询时的登录会话，并沿用配置中的课程筛选、视频模式和答题设置。全部所选任务结束后返回菜单，可再次选择平台；菜单课程信息是启动时的查询结果，实际推进情况以任务日志为准。
+
+MOOC 与智慧树日志带平台和账号备注；平台未提供统一课程进度时仅显示可获得的课程信息。`Ctrl+C` 退出控制台。
+
 ## 📢作者有话说
 
 > 1、因作者学业繁忙，之后的更新需要等2025年才能开始更新，不过目前所有功能都还是能用的，这点不用担心。

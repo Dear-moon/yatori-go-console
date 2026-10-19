@@ -2,23 +2,13 @@ package logic
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"yatori-go-console/config"
-	"yatori-go-console/logic/cqie"
-	"yatori-go-console/logic/enaea"
-	"yatori-go-console/logic/haiqikeji"
-	"yatori-go-console/logic/icve"
-	"yatori-go-console/logic/ketangx"
-	mooclogic "yatori-go-console/logic/mooc"
-	qsxt "yatori-go-console/logic/qingshuxuetang"
-	"yatori-go-console/logic/welearn"
-	"yatori-go-console/logic/xuexitong"
-	"yatori-go-console/logic/yinghua"
-	zhslogic "yatori-go-console/logic/zhihuishu"
+	"yatori-go-console/logic/console"
 	utils2 "yatori-go-console/utils"
 	"yatori-go-console/web"
 
@@ -159,103 +149,15 @@ func Lunch() {
 	if configJson.Setting.BasicSetting.WebModel == 1 {
 		web.ServiceInit()
 	}
-	brushBlock(&configJson)
-	lg.Print(lg.INFO, lg.Red, "Yatori --- ", "所有任务执行完毕")
-}
-
-var platformLock sync.WaitGroup //平台锁
-// brushBlock 刷课执行块
-func brushBlock(configData *config.JSONDataForConfig) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-	if err := mooclogic.Run(ctx, configData.Users, os.Stdin, os.Stdout, utils2.RandProxyStr); err != nil {
-		lg.Print(lg.INFO, "[MOOC] ", err.Error())
+	if err := console.Run(ctx, &configJson, os.Stdin, os.Stdout, utils2.RandProxyStr); err != nil {
+		if errors.Is(err, context.Canceled) {
+			lg.Print(lg.INFO, "控制台已停止")
+		} else {
+			lg.Print(lg.INFO, lg.BoldRed, "控制台运行失败：", err.Error())
+		}
 	}
-	if ctx.Err() != nil {
-		return
-	}
-	if err := zhslogic.Run(ctx, configData.Users, os.Stdin, os.Stdout, utils2.RandProxyStr); err != nil {
-		lg.Print(lg.INFO, "[智慧树] ", err.Error())
-	}
-	if ctx.Err() != nil {
-		return
-	}
-
-	//统一登录模块------------------------------------------------------------------
-	yingHuaAccount := yinghua.FilterAccount(configData)
-	yingHuaOperation := yinghua.UserLoginOperation(yingHuaAccount)
-	enaeaAccount := enaea.FilterAccount(configData)
-	enaeaOperation := enaea.UserLoginOperation(enaeaAccount)
-	cqieAccount := cqie.FilterAccount(configData)
-	cqieOpertation := cqie.UserLoginOperation(cqieAccount)
-	xueXiTongAccount := xuexitong.FilterAccount(configData)
-	xueXiTongOperation := xuexitong.UserLoginOperation(xueXiTongAccount)
-	ketangxAccount := ketangx.FilterAccount(configData)
-	ketangxOperation := ketangx.UserLoginOperation(ketangxAccount)
-	welearnAccount := welearn.FilterAccount(configData)
-	welearnOperation := welearn.UserLoginOperation(welearnAccount)
-	icveAccount := icve.FilterAccount(configData)
-	icveOperation := icve.UserLoginOperation(icveAccount)
-	qsxtAccount := qsxt.FilterAccount(configData)
-	qsxtOperation := qsxt.UserLoginOperation(qsxtAccount)
-	hqkjAccount := haiqikeji.FilterAccount(configData)
-	hqkjOperation := haiqikeji.UserLoginOperation(hqkjAccount)
-
-	//统一刷课---------------------------------------------------------------------
-	//英华
-	platformLock.Add(1)
-	go func() {
-		yinghua.RunBrushOperation(configData.Setting, yingHuaAccount, yingHuaOperation) //英华统一刷课模块
-		platformLock.Done()
-	}()
-	//学习公社
-	platformLock.Add(1)
-	go func() {
-		enaea.RunBrushOperation(configData.Setting, enaeaAccount, enaeaOperation) //学习公社统一刷课模块
-		platformLock.Done()
-	}()
-	platformLock.Add(1)
-	go func() {
-		cqie.RunBrushOperation(configData.Setting, cqieAccount, cqieOpertation) //重庆工程学院CQIE刷课模块
-		platformLock.Done()
-	}()
-	//学习通
-	platformLock.Add(1)
-	go func() {
-		xuexitong.RunBrushOperation(configData.Setting, xueXiTongAccount, xueXiTongOperation) //英华统一刷课模块
-		platformLock.Done()
-	}()
-	//码上研训
-	platformLock.Add(1)
-	go func() {
-		ketangx.RunBrushOperation(configData.Setting, ketangxAccount, ketangxOperation) //码上研训统一刷课模块
-		platformLock.Done()
-	}()
-	//WeLearn
-	platformLock.Add(1)
-	go func() {
-		welearn.RunBrushOperation(configData.Setting, welearnAccount, welearnOperation) //码上研训统一刷课模块
-		platformLock.Done()
-	}()
-	//icve
-	platformLock.Add(1)
-	go func() {
-		icve.RunBrushOperation(configData.Setting, icveAccount, icveOperation) //码上研训统一刷课模块
-		platformLock.Done()
-	}()
-	//青书学堂
-	platformLock.Add(1)
-	go func() {
-		qsxt.RunBrushOperation(configData.Setting, qsxtAccount, qsxtOperation) //青书学堂统一刷课模块
-		platformLock.Done()
-	}()
-	//海旗科技
-	platformLock.Add(1)
-	go func() {
-		haiqikeji.RunBrushOperation(configData.Setting, hqkjAccount, hqkjOperation) //海旗科技统一刷课模块
-		platformLock.Done()
-	}()
-	platformLock.Wait()
 }
 
 // configJsonCheck 配置文件检测检验

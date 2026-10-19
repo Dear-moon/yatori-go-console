@@ -14,6 +14,7 @@ import (
 	moocstudy "github.com/yatori-dev/yatori-go-core/aggregation/mooc"
 	"github.com/yatori-dev/yatori-go-core/api/mooc"
 	"yatori-go-console/config"
+	"yatori-go-console/logic/platform"
 )
 
 type session interface {
@@ -25,50 +26,35 @@ type session interface {
 	Chapters(context.Context, string) ([]mooc.MOOCChapter, error)
 	Close()
 }
-type sessionFactory func(string, mooc.ClientOptions) (session, error)
 
-func Run(ctx context.Context, users []config.User, input io.Reader, output io.Writer, proxy func() string) error {
-	return run(ctx, users, input, output, proxy, func(account string, options mooc.ClientOptions) (session, error) {
-		// The account is only required for the password path.
-		if strings.TrimSpace(account) != "" {
-			return mooc.NewMOOCClient(account, options)
-		}
-		return mooc.NewCookieClient(options)
-	})
-}
-
-func run(ctx context.Context, users []config.User, input io.Reader, output io.Writer, proxy func() string, newSession sessionFactory) error {
-	reader := bufio.NewReaderSize(input, 128)
-	for _, user := range users {
-		if user.AccountType != "MOOC" {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		options := mooc.ClientOptions{}
-		if user.IsProxy == 1 {
-			if proxy == nil {
-				return errors.New("MOOC proxy is unavailable")
-			}
-			options.IpProxySW = true
-			options.ProxyIP = proxy()
-		}
-		client, err := newSession(user.Account, options)
-		if err != nil {
-			return err
-		}
-		err = runAccount(ctx, user, client, reader, output)
-		client.Close()
-		if err != nil {
-			return err
-		}
+func Prepare(ctx context.Context, user config.User, reader *bufio.Reader, output io.Writer, proxy func() string) (*platform.Account, error) {
+	options := mooc.ClientOptions{}
+	if user.IsProxy == 1 {
+		options.IpProxySW = true
+		options.ProxyIP = proxy()
 	}
-	return nil
+	var client *mooc.MOOCClient
+	var err error
+	if strings.TrimSpace(user.Account) != "" {
+		client, err = mooc.NewMOOCClient(user.Account, options)
+	} else {
+		client, err = mooc.NewCookieClient(options)
+	}
+	if err != nil {
+		return nil, err
+	}
+	account, err := prepareAccount(ctx, user, client, reader, output)
+	if err != nil {
+		client.Close()
+		return nil, err
+	}
+	account.Close = client.Close
+	return account, nil
 }
-func runAccount(ctx context.Context, user config.User, client session, reader *bufio.Reader, output io.Writer) error {
+
+func prepareAccount(ctx context.Context, user config.User, client session, reader *bufio.Reader, output io.Writer) (*platform.Account, error) {
 	if user.CoursesCustom.VideoModel != 0 && user.CoursesCustom.VideoModel != 1 {
-		return errors.New("MOOC videoModel supports only 0 (disabled) or 1 (elapsed-time reporting)")
+		return nil, errors.New("MOOC videoModel supports only 0 (disabled) or 1 (elapsed-time reporting)")
 	}
 	if user.CoursesCustom.AutoExam != 0 {
 		fmt.Fprintln(output, "[MOOC] 自动答题尚未接入，本次不会提交测试。")
@@ -83,7 +69,7 @@ func runAccount(ctx context.Context, user config.User, client session, reader *b
 		fmt.Fprintf(output, "[MOOC] %s：使用账号密码直接登录，不需要浏览器。\n", safeText(label))
 		current, err = client.LoginWithPassword(ctx, user.Password)
 		if err != nil {
-			return explainError(err)
+			return nil, explainError(err)
 		}
 	} else {
 		fmt.Fprintf(output, "[MOOC] %s：请在启用远程调试的专用浏览器中登录对应账号。\n", safeText(label))
@@ -91,30 +77,41 @@ func runAccount(ctx context.Context, user config.User, client session, reader *b
 		fmt.Fprint(output, "确认浏览器当前账号无误后按回车继续（输入 q 取消）：")
 		confirmation, err := readCode(ctx, reader)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if confirmation == "q" {
-			return context.Canceled
+			return nil, context.Canceled
 		}
 		cookies, err := browserCookies(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		current, err = client.LoginCookies(ctx, cookies)
 		cookies = nil
 		if err != nil {
-			return explainError(err)
+			return nil, explainError(err)
 		}
 		fmt.Fprintln(output, "[MOOC] 登录态已导入，可关闭专用浏览器；后续任务由 CLI 自动执行。")
 	}
 	if current == nil || current.ID == "" {
-		return mooc.ErrAuthenticationUnverified
+		return nil, mooc.ErrAuthenticationUnverified
 	}
 	fmt.Fprintf(output, "[MOOC] 已验证身份：%s\n", safeText(current.Nickname))
 	courses, err := client.Courses(ctx)
 	if err != nil {
-		return explainError(err)
+		return nil, explainError(err)
 	}
+	account := &platform.Account{}
+	for _, course := range courses {
+		account.Courses = append(account.Courses, platform.Course{Name: course.Name, Detail: course.School})
+	}
+	account.Study = func(ctx context.Context) error {
+		return studyAccount(ctx, user, client, courses, output)
+	}
+	return account, nil
+}
+
+func studyAccount(ctx context.Context, user config.User, client session, courses []mooc.MOOCCourse, output io.Writer) error {
 	if len(courses) == 0 {
 		fmt.Fprintln(output, "[MOOC] 暂无已选 MOOC 课程。")
 		return nil

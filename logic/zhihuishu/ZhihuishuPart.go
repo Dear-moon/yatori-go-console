@@ -12,51 +12,75 @@ import (
 	"runtime"
 	"strings"
 	"yatori-go-console/config"
+	"yatori-go-console/logic/platform"
 
 	"github.com/yatori-dev/yatori-go-core/api/zhihuishu"
 )
 
-func Run(ctx context.Context, users []config.User, input io.Reader, output io.Writer, proxy func() string) error {
-	reader := bufio.NewReaderSize(input, 128)
-	for _, user := range users {
-		if user.AccountType != "ZHIHUISHU" {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		options := zhihuishu.ClientOptions{}
-		if user.IsProxy == 1 {
-			if proxy == nil {
-				return errors.New("智慧树代理不可用")
-			}
-			options.ProxyURL = proxy()
-		}
-		client, err := zhihuishu.NewClient(options)
-		if err != nil {
-			return err
-		}
-		err = runAccount(ctx, user, client, reader, output)
-		client.Close()
-		if err != nil {
-			return err
-		}
+func Prepare(ctx context.Context, user config.User, reader *bufio.Reader, output io.Writer, proxy func() string) (*platform.Account, error) {
+	options := zhihuishu.ClientOptions{}
+	if user.IsProxy == 1 {
+		options.ProxyURL = proxy()
 	}
-	return nil
+	client, err := zhihuishu.NewClient(options)
+	if err != nil {
+		return nil, err
+	}
+	account, err := prepareAccount(ctx, user, client, reader, output)
+	if err != nil {
+		client.Close()
+		return nil, err
+	}
+	account.Close = client.Close
+	return account, nil
 }
 
-func runAccount(ctx context.Context, user config.User, client *zhihuishu.Client, reader *bufio.Reader, output io.Writer) error {
+func prepareAccount(ctx context.Context, user config.User, client *zhihuishu.Client, reader *bufio.Reader, output io.Writer) (*platform.Account, error) {
 	if user.CoursesCustom.VideoModel != 0 && user.CoursesCustom.VideoModel != 1 {
-		return errors.New("智慧树 videoModel 仅支持 0（查看目录）或 1（普通计时模式）")
+		return nil, errors.New("智慧树 videoModel 仅支持 0（查看目录）或 1（普通计时模式）")
 	}
 	if user.CoursesCustom.AutoExam != 0 {
 		fmt.Fprintln(output, "[智慧树] 自动答题尚未接入。")
 	}
 	useQR := strings.EqualFold(strings.TrimSpace(os.Getenv("YATORI_ZHIHUISHU_LOGIN")), "qr")
 	if !useQR {
-		fmt.Fprintln(output, "[智慧树] 请在专用浏览器登录 onlineweb.zhihuishu.com；登录态有效即可，不必停留在课程页。")
-		fmt.Fprintln(output, "默认连接本机 9223 端口；可用 YATORI_ZHIHUISHU_CDP_URL 指定本机调试地址。")
-		fmt.Fprint(output, "确认浏览器当前账号无误后按回车继续（输入 q 取消）：")
+		selectedQR, err := chooseLoginMethod(ctx, reader, output)
+		if err != nil {
+			return nil, err
+		}
+		useQR = selectedQR
+	}
+	current, err := loginZhihuishu(ctx, client, output, useQR)
+	if err != nil {
+		if errors.Is(err, zhihuishu.ErrAuthenticationFailed) || errors.Is(err, zhihuishu.ErrSessionExpired) {
+			return nil, fmt.Errorf("智慧树登录态无效，请在浏览器恢复登录，或用 YATORI_ZHIHUISHU_LOGIN=qr 扫码登录：%w", err)
+		}
+		return nil, err
+	}
+	if current == nil || current.ID == "" {
+		return nil, zhihuishu.ErrAuthenticationFailed
+	}
+
+	courses, err := client.AICourses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(output, "[智慧树] 找到 %d 门 AI 课程。\n", len(courses))
+	account := &platform.Account{}
+	for _, course := range courses {
+		account.Courses = append(account.Courses, platform.Course{Name: course.Name, Detail: "AI 课程"})
+	}
+	account.Study = func(ctx context.Context) error {
+		return studyAccount(ctx, user, client, courses, output)
+	}
+	return account, nil
+}
+
+func chooseLoginMethod(ctx context.Context, reader *bufio.Reader, output io.Writer) (bool, error) {
+	fmt.Fprintln(output, "[智慧树] 登录方式：1 扫码登录（推荐），2 导入专用浏览器登录态，q 取消。")
+	fmt.Fprintln(output, "[智慧树] 浏览器方式需先在专用浏览器登录 onlineweb.zhihuishu.com，默认调试端口 9223。")
+	for {
+		fmt.Fprint(output, "请选择登录方式（回车或 1 扫码，2 浏览器，q 取消）：")
 		type answer struct {
 			value string
 			err   error
@@ -64,36 +88,30 @@ func runAccount(ctx context.Context, user config.User, client *zhihuishu.Client,
 		done := make(chan answer, 1)
 		go func() {
 			line, err := reader.ReadString('\n')
-			done <- answer{strings.TrimSpace(line), err}
+			done <- answer{strings.ToLower(strings.TrimSpace(line)), err}
 		}()
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case result := <-done:
 			if result.err != nil {
-				return errors.New("无法读取登录确认")
+				return false, errors.New("无法读取登录方式")
 			}
-			if result.value == "q" {
-				return context.Canceled
+			switch result.value {
+			case "", "1", "qr":
+				return true, nil
+			case "2", "browser":
+				return false, nil
+			case "q":
+				return false, context.Canceled
+			default:
+				fmt.Fprintln(output, "[智慧树] 无效选择，请输入 1、2 或 q。")
 			}
 		}
 	}
-	current, err := loginZhihuishu(ctx, client, output, useQR)
-	if err != nil {
-		if errors.Is(err, zhihuishu.ErrAuthenticationFailed) || errors.Is(err, zhihuishu.ErrSessionExpired) {
-			return fmt.Errorf("智慧树登录态无效，请在浏览器恢复登录，或用 YATORI_ZHIHUISHU_LOGIN=qr 扫码登录：%w", err)
-		}
-		return err
-	}
-	if current == nil || current.ID == "" {
-		return zhihuishu.ErrAuthenticationFailed
-	}
+}
 
-	courses, err := client.AICourses(ctx)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(output, "[智慧树] 找到 %d 门 AI 课程。\n", len(courses))
+func studyAccount(ctx context.Context, user config.User, client *zhihuishu.Client, courses []zhihuishu.AICourse, output io.Writer) error {
 	for _, course := range courses {
 		settings := user.CoursesCustom
 		if config.CmpCourse(course.Name, settings.ExcludeCourses) || (len(settings.IncludeCourses) > 0 && !config.CmpCourse(course.Name, settings.IncludeCourses)) {
