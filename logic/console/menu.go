@@ -41,7 +41,7 @@ func Run(ctx context.Context, data *config.JSONDataForConfig, input io.Reader, o
 		case "MOOC":
 			return mooc.Prepare(ctx, user, reader, out, proxy)
 		case "ZHIHUISHU":
-			return zhihuishu.Prepare(ctx, user, reader, out, proxy)
+			return zhihuishu.Prepare(ctx, data.Setting, user, reader, out, proxy)
 		default:
 			return prepareLegacy(ctx, data.Setting, user, proxy)
 		}

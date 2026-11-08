@@ -17,7 +17,7 @@ import (
 	"github.com/yatori-dev/yatori-go-core/api/zhihuishu"
 )
 
-func Prepare(ctx context.Context, user config.User, reader *bufio.Reader, output io.Writer, proxy func() string) (*platform.Account, error) {
+func Prepare(ctx context.Context, setting config.Setting, user config.User, reader *bufio.Reader, output io.Writer, proxy func() string) (*platform.Account, error) {
 	options := zhihuishu.ClientOptions{}
 	if user.IsProxy == 1 {
 		options.ProxyURL = proxy()
@@ -26,7 +26,7 @@ func Prepare(ctx context.Context, user config.User, reader *bufio.Reader, output
 	if err != nil {
 		return nil, err
 	}
-	account, err := prepareAccount(ctx, user, client, reader, output)
+	account, err := prepareAccount(ctx, setting, user, client, reader, output)
 	if err != nil {
 		client.Close()
 		return nil, err
@@ -35,12 +35,9 @@ func Prepare(ctx context.Context, user config.User, reader *bufio.Reader, output
 	return account, nil
 }
 
-func prepareAccount(ctx context.Context, user config.User, client *zhihuishu.Client, reader *bufio.Reader, output io.Writer) (*platform.Account, error) {
+func prepareAccount(ctx context.Context, setting config.Setting, user config.User, client *zhihuishu.Client, reader *bufio.Reader, output io.Writer) (*platform.Account, error) {
 	if user.CoursesCustom.VideoModel != 0 && user.CoursesCustom.VideoModel != 1 {
 		return nil, errors.New("智慧树 videoModel 仅支持 0（查看目录）或 1（普通计时模式）")
-	}
-	if user.CoursesCustom.AutoExam != 0 {
-		fmt.Fprintln(output, "[智慧树] 自动答题尚未接入。")
 	}
 	useQR := strings.EqualFold(strings.TrimSpace(os.Getenv("YATORI_ZHIHUISHU_LOGIN")), "qr")
 	if !useQR {
@@ -71,7 +68,7 @@ func prepareAccount(ctx context.Context, user config.User, client *zhihuishu.Cli
 		account.Courses = append(account.Courses, platform.Course{Name: course.Name, Detail: "AI 课程"})
 	}
 	account.Study = func(ctx context.Context) error {
-		return studyAccount(ctx, user, client, courses, output)
+		return studyAccount(ctx, setting, user, client, courses, output)
 	}
 	return account, nil
 }
@@ -111,7 +108,7 @@ func chooseLoginMethod(ctx context.Context, reader *bufio.Reader, output io.Writ
 	}
 }
 
-func studyAccount(ctx context.Context, user config.User, client *zhihuishu.Client, courses []zhihuishu.AICourse, output io.Writer) error {
+func studyAccount(ctx context.Context, setting config.Setting, user config.User, client *zhihuishu.Client, courses []zhihuishu.AICourse, output io.Writer) error {
 	for _, course := range courses {
 		settings := user.CoursesCustom
 		if config.CmpCourse(course.Name, settings.ExcludeCourses) || (len(settings.IncludeCourses) > 0 && !config.CmpCourse(course.Name, settings.IncludeCourses)) {
@@ -195,6 +192,11 @@ func studyAccount(ctx context.Context, user config.User, client *zhihuishu.Clien
 		fmt.Fprintf(output, "[智慧树] 已读取 %d 个知识点。\n", count)
 		if settings.VideoModel == 1 && count > 0 {
 			fmt.Fprintln(output, "[智慧树] 本课程目录内的资源任务已全部确认完成。")
+		}
+		if settings.AutoExam != 0 {
+			if err := StudyMastery(ctx, setting, user, client, course, output); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
